@@ -1,0 +1,29 @@
+!SESSION 2021-12-03 23:35:26.727 -----------------------------------------------
+eclipse.buildId=unknown
+java.version=1.8.0_77
+java.vendor=Oracle Corporation
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Framework arguments:  D:\Downloads\b.nvvp
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 -data @noDefault D:\Downloads\b.nvvp
+
+!ENTRY org.eclipse.ui 4 4 2021-12-03 23:35:53.194
+!MESSAGE Referenced part does not exist yet: org.eclipse.ui.editors.
+
+!ENTRY com.nvidia.viper 4 0 2021-12-03 23:35:54.881
+!MESSAGE Unable to read session timeline.
+!STACK 0
+java.io.EOFException
+	at java.util.zip.GZIPInputStream.readUByte(GZIPInputStream.java:268)
+	at java.util.zip.GZIPInputStream.readUShort(GZIPInputStream.java:258)
+	at java.util.zip.GZIPInputStream.readHeader(GZIPInputStream.java:164)
+	at java.util.zip.GZIPInputStream.<init>(GZIPInputStream.java:79)
+	at java.util.zip.GZIPInputStream.<init>(GZIPInputStream.java:91)
+	at com.nvidia.viper.model.ProfileDataModel.copyToStream(ProfileDataModel.java:283)
+	at com.nvidia.viper.model.ProfileDataModel.<init>(ProfileDataModel.java:218)
+	at com.nvidia.viper.model.Session.read(Session.java:3964)
+	at com.nvidia.viper.model.Session.<init>(Session.java:1234)
+	at com.nvidia.viper.FileUtils.loadSession(FileUtils.java:109)
+	at com.nvidia.viper.actions.OpenSessionAction$RunnableWithProgress.tryOpenSession(OpenSessionAction.java:212)
+	at com.nvidia.viper.actions.OpenSessionAction$RunnableWithProgress.performOpen(OpenSessionAction.java:270)
+	at com.nvidia.viper.actions.OpenSessionAction$RunnableWithProgress.access$0(OpenSessionAction.java:263)
+	at com.nvidia.viper.actions.OpenSessionAction$RunnableWithProgress$1.run(OpenSessionAction.java:131)
