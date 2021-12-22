@@ -99,7 +99,7 @@ __global__ void blurImgKernel1(uchar3 *inPixels, int width, int height,
                                float *filter, int filterWidth,
                                uchar3 *outPixels) {
   // TODO
-  // copy + paste from HW1 :)
+
   int px = blockIdx.x * blockDim.x + threadIdx.x;
   int py = blockIdx.y * blockDim.y + threadIdx.y;
   if (px >= width || py >= height) {
@@ -110,20 +110,21 @@ __global__ void blurImgKernel1(uchar3 *inPixels, int width, int height,
   for (int filterRow = 0; filterRow < filterWidth; filterRow++) {
     for (int filterCol = 0; filterCol < filterWidth; filterCol++) {
       float filterValue = filter[filterRow * filterWidth + filterCol];
-
-      int inPixelRow = (px - filterWidth / 2) + filterRow;
-      int inPixelCol = (py - filterWidth / 2) + filterCol;
+      int idx = filterRow * filterWidth + filterCol;
+      int inPixelRow = px - filterWidth / 2 + filterRow;
+      int inPixelCol = py - filterWidth / 2 + filterCol;
 
       inPixelRow = min(height - 1, max(0, inPixelRow));
       inPixelCol = min(width - 1, max(0, inPixelCol));
 
       uchar3 inPixel = inPixels[inPixelRow * width + inPixelCol];
 
-      outPixel.x += filterValue * inPixel.x;
-      outPixel.y += filterValue * inPixel.y;
-      outPixel.z += filterValue * inPixel.z;
+      outPixel.x += filter[idx] * inPixel.x;
+      outPixel.y += filter[idx] * inPixel.y;
+      outPixel.z += filter[idx] * inPixel.z;
     }
   }
+  int i = px * width + py;
   outPixels[px * width + py] = make_uchar3(outPixel.x, outPixel.y, outPixel.z);
 }
 
@@ -147,8 +148,8 @@ __global__ void blurImgKernel2(uchar3 *inPixels, int width, int height,
   int offsetY = blockIdx.y * blockDim.y;
 
   // copy data to s_inPixels
-  for (int c = threadIdx.y; c < s_height; c += blockDim.y) {
-    for (int r = threadIdx.x; r < s_width; r += blockDim.x) {
+  for (int r = threadIdx.y; r < s_height; r += blockDim.y) {
+    for (int c = threadIdx.x; c < s_width; c += blockDim.x) {
       int inPixelRow = min(max(r + offsetX - padding, 0), width - 1);
       int inPixelCol = min(max(c + offsetY - padding, 0), height - 1);
       s_inPixels[r + c * s_width] = inPixels[inPixelRow + inPixelCol * width];
@@ -190,8 +191,8 @@ __global__ void blurImgKernel3(uchar3 *inPixels, int width, int height,
   int offsetY = blockIdx.y * blockDim.y;
 
   // copy data to s_inPixels
-  for (int c = threadIdx.y; c < s_height; c += blockDim.y) {
-    for (int r = threadIdx.x; r < s_width; r += blockDim.x) {
+  for (int r = threadIdx.y; r < s_height; r += blockDim.y) {
+    for (int c = threadIdx.x; c < s_width; c += blockDim.x) {
       int inPixelRow = min(max(r + offsetX - padding, 0), width - 1);
       int inPixelCol = min(max(c + offsetY - padding, 0), height - 1);
       s_inPixels[r + c * s_width] = inPixels[inPixelRow + inPixelCol * width];
