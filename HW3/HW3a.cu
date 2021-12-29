@@ -94,6 +94,7 @@ void writePnm(uchar3 *pixels, int width, int height, char *fileName) {
 
   fclose(f);
 }
+
 __host__ __device__ int refineCoord(int i, int min, int max) {
   if (i < min)
     return min;
@@ -106,32 +107,33 @@ __global__ void blurImgKernel1(uchar3 *inPixels, int width, int height,
                                float *filter, int filterWidth,
                                uchar3 *outPixels) {
   // TODO
+  int i_r = blockIdx.y * blockDim.y + threadIdx.y;
+  int i_c = blockIdx.x * blockDim.x + threadIdx.x;
 
-  int px = blockIdx.x * blockDim.x + threadIdx.x;
-  int py = blockIdx.y * blockDim.y + threadIdx.y;
-  if (px >= width || py >= height) {
+  if (i_r >= height || i_c >= width)
     return;
-  }
 
+  // float valX(0.0), valY(0.0), valZ(0.0);
   float3 outPixel = make_float3(0, 0, 0);
-  for (int filterCol = 0; filterCol < filterWidth; filterCol++) {
-    for (int filterRow = 0; filterRow < filterWidth; filterRow++) {
 
-      int idx = filterRow * filterWidth + filterCol;
-      int inPixelRow = px - filterWidth / 2 + filterRow;
-      int inPixelCol = py - filterWidth / 2 + filterCol;
+  for (int k_r = 0; k_r < filterWidth; k_r++) {
+    for (int k_c = 0; k_c < filterWidth; k_c++) {
+      int k_i = k_r * filterWidth + k_c;
 
-      inPixelRow = refineCoord(inPixelRow, 0, height - 1);
-      inPixelCol = refineCoord(inPixelCol, 0, width - 1);
+      int src_r = i_r - filterWidth / 2 + k_r;
+      src_r = refineCoord(src_r, 0, height - 1);
+      int src_c = i_c - filterWidth / 2 + k_c;
+      src_c = refineCoord(src_c, 0, width - 1);
+      int src_i = src_r * width + src_c;
 
-      // uchar3 inPixel = inPixels[inPixelRow * width + inPixelCol];
-
-      outPixel.x += filter[idx] * inPixels[inPixelRow * width + inPixelCol].x;
-      outPixel.y += filter[idx] * inPixels[inPixelRow * width + inPixelCol].y;
-      outPixel.z += filter[idx] * inPixels[inPixelRow * width + inPixelCol].z;
+      outPixel.x += filter[k_i] * inPixels[src_i].x;
+      outPixel.y += filter[k_i] * inPixels[src_i].y;
+      outPixel.z += filter[k_i] * inPixels[src_i].z;
     }
   }
-  int i = px * width + py;
+
+  int i = i_r * width + i_c;
+
   outPixels[i] = make_uchar3(outPixel.x, outPixel.y, outPixel.z);
 }
 
@@ -139,87 +141,101 @@ __global__ void blurImgKernel2(uchar3 *inPixels, int width, int height,
                                float *filter, int filterWidth,
                                uchar3 *outPixels) {
   // TODO
-  // create SMEM
   extern __shared__ uchar3 s_inPixels[];
+  int i_r = blockIdx.y * blockDim.y + threadIdx.y;
+  int i_c = blockIdx.x * blockDim.x + threadIdx.x;
 
-  int px = blockIdx.x * blockDim.x + threadIdx.x;
-  int py = blockIdx.y * blockDim.y + threadIdx.y;
-  if (px >= width || py >= height) {
-    return;
-  }
+  int dataR = blockDim.y + filterWidth - 1;
+  int dataC = blockDim.x + filterWidth - 1;
+  int inPixelsCornerR = blockIdx.y * blockDim.y - filterWidth / 2;
+  int inPixelsCornerC = blockIdx.x * blockDim.x - filterWidth / 2;
 
-  int padding = filterWidth / 2;
-  int s_width = blockDim.x + filterWidth - 1;
-  int s_height = blockDim.y + filterWidth - 1;
-  int offsetX = blockIdx.x * blockDim.x;
-  int offsetY = blockIdx.y * blockDim.y;
+  for (int s_inPixelsR = threadIdx.y; s_inPixelsR < dataR;
+       s_inPixelsR += blockDim.y) {
+    for (int s_inPixelsC = threadIdx.x; s_inPixelsC < dataC;
+         s_inPixelsC += blockDim.x) {
+      int inPixelsR = inPixelsCornerR + s_inPixelsR;
+      int inPixelsC = inPixelsCornerC + s_inPixelsC;
 
-  // copy data to s_inPixels
-  for (int r = threadIdx.y; r < s_height; r += blockDim.y) {
-    for (int c = threadIdx.x; c < s_width; c += blockDim.x) {
-      int inPixelRow = min(max(r + offsetX - padding, 0), width - 1);
-      int inPixelCol = min(max(c + offsetY - padding, 0), height - 1);
-      s_inPixels[r + c * s_width] = inPixels[inPixelRow + inPixelCol * width];
+      inPixelsR = refineCoord(inPixelsR, 0, height - 1);
+      inPixelsC = refineCoord(inPixelsC, 0, width - 1);
+
+      s_inPixels[s_inPixelsR + s_inPixelsC * dataR] =
+          inPixels[inPixelsR + inPixelsC * height];
     }
   }
-
   __syncthreads();
 
-  float3 out = make_float3(0, 0, 0);
-  for (int j = 0; j < filterWidth; j++) {
-    for (int i = 0; i < filterWidth; i++) {
-      float filterVal = filter[i + j * filterWidth];
-      uchar3 pixelVal =
-          s_inPixels[(threadIdx.x + i) + (threadIdx.y + j) * s_width];
-      out.x += filterVal * pixelVal.x;
-      out.y += filterVal * pixelVal.y;
-      out.z += filterVal * pixelVal.z;
+  float3 outPixel = make_float3(0, 0, 0);
+
+  for (int k_r = 0; k_r < filterWidth; k_r++) {
+    for (int k_c = 0; k_c < filterWidth; k_c++) {
+      int k_i = k_r * filterWidth + k_c;
+
+      int src_r = threadIdx.y + k_r;
+      int src_c = threadIdx.x + k_c;
+      int src_i = src_r * dataC + src_c;
+
+      outPixel.x += filter[k_i] * s_inPixels[src_i].x;
+      outPixel.y += filter[k_i] * s_inPixels[src_i].y;
+      outPixel.z += filter[k_i] * s_inPixels[src_i].z;
     }
   }
-  outPixels[py * width + px] = make_uchar3(out.x, out.y, out.z);
+
+  int i = i_r * width + i_c;
+  if (i_r >= height || i_c >= width)
+    outPixels[i] = make_uchar3(outPixel.x, outPixel.y, outPixel.z);
 }
 
 __global__ void blurImgKernel3(uchar3 *inPixels, int width, int height,
                                int filterWidth, uchar3 *outPixels) {
   // TODO
-  // create SMEM
   extern __shared__ uchar3 s_inPixels[];
+  int i_r = blockIdx.y * blockDim.y + threadIdx.y;
+  int i_c = blockIdx.x * blockDim.x + threadIdx.x;
 
-  int px = blockIdx.x * blockDim.x + threadIdx.x;
-  int py = blockIdx.y * blockDim.y + threadIdx.y;
-  if (px >= width || py >= height) {
+  if (i_r >= height || i_c >= width)
     return;
-  }
 
-  int padding = filterWidth / 2;
-  int s_width = blockDim.x + filterWidth - 1;
-  int s_height = blockDim.y + filterWidth - 1;
-  int offsetX = blockIdx.x * blockDim.x;
-  int offsetY = blockIdx.y * blockDim.y;
+  int dataR = blockDim.y + filterWidth - 1;
+  int dataC = blockDim.x + filterWidth - 1;
+  int inPixelsCornerR = blockIdx.y * blockDim.y - filterWidth / 2;
+  int inPixelsCornerC = blockIdx.x * blockDim.x - filterWidth / 2;
 
-  // copy data to s_inPixels
-  for (int r = threadIdx.y; r < s_height; r += blockDim.y) {
-    for (int c = threadIdx.x; c < s_width; c += blockDim.x) {
-      int inPixelRow = min(max(r + offsetX - padding, 0), width - 1);
-      int inPixelCol = min(max(c + offsetY - padding, 0), height - 1);
-      s_inPixels[r + c * s_width] = inPixels[inPixelRow + inPixelCol * width];
+  for (int s_inPixelsR = threadIdx.y; s_inPixelsR < dataR;
+       s_inPixelsR += blockDim.y) {
+    for (int s_inPixelsC = threadIdx.x; s_inPixelsC < dataC;
+         s_inPixelsC += blockDim.x) {
+      int inPixelsR = inPixelsCornerR + s_inPixelsR;
+      int inPixelsC = inPixelsCornerC + s_inPixelsC;
+
+      inPixelsR = refineCoord(inPixelsR, 0, height - 1);
+      inPixelsC = refineCoord(inPixelsC, 0, width - 1);
+
+      s_inPixels[s_inPixelsR * blockDim.x + s_inPixelsC] =
+          inPixels[inPixelsR * width + inPixelsC];
     }
   }
-
   __syncthreads();
 
-  float3 out = make_float3(0, 0, 0);
-  for (int j = 0; j < filterWidth; j++) {
-    for (int i = 0; i < filterWidth; i++) {
-      float filterVal = dc_filter[i + j * filterWidth];
-      uchar3 pixelVal =
-          s_inPixels[(threadIdx.x + i) + (threadIdx.y + j) * s_width];
-      out.x += filterVal * pixelVal.x;
-      out.y += filterVal * pixelVal.y;
-      out.z += filterVal * pixelVal.z;
+  float3 outPixel = make_float3(0, 0, 0);
+
+  for (int k_r = 0; k_r < filterWidth; k_r++) {
+    for (int k_c = 0; k_c < filterWidth; k_c++) {
+      int k_i = k_r * filterWidth + k_c;
+
+      int src_r = threadIdx.y + k_r;
+      int src_c = threadIdx.x + k_c;
+      int src_i = src_r * blockDim.x + src_c;
+
+      outPixel.x += dc_filter[k_i] * s_inPixels[src_i].x;
+      outPixel.y += dc_filter[k_i] * s_inPixels[src_i].y;
+      outPixel.z += dc_filter[k_i] * s_inPixels[src_i].z;
     }
   }
-  outPixels[py * width + px] = make_uchar3(out.x, out.y, out.z);
+
+  int i = i_r * width + i_c;
+  outPixels[i] = make_uchar3(outPixel.x, outPixel.y, outPixel.z);
 }
 
 void blurImg(uchar3 *inPixels, int width, int height, float *filter,
@@ -269,8 +285,7 @@ void blurImg(uchar3 *inPixels, int width, int height, float *filter,
     } else {
       // TODO: copy data from "filter" (on host) to "dc_filter" (on CMEM of
       // device)
-      CHECK(cudaMemcpyToSymbol(dc_filter, filter, filterSize, 0,
-                               cudaMemcpyHostToDevice));
+      cudaMemcpyToSymbol(dc_filter, filter, filterSize);
     }
 
     // Call kernel
@@ -280,20 +295,22 @@ void blurImg(uchar3 *inPixels, int width, int height, float *filter,
            gridSize.x, gridSize.y);
     timer.Start();
     if (kernelType == 1) {
-      // TODO: call blur ImgKernel1
+      // TODO: call blurImgKernel1
       blurImgKernel1<<<gridSize, blockSize>>>(
           d_inPixels, width, height, d_filter, filterWidth, d_outPixels);
+
     } else if (kernelType == 2) {
       // TODO: call blurImgKernel2
-      blurImgKernel2<<<gridSize, blockSize,
-                       (blockSize.x + filterWidth - 1) *
-                           (blockSize.y + filterWidth - 1) * sizeof(uchar3)>>>(
+      int shareMemSize = (blockSize.x + filterWidth - 1) *
+                         (blockSize.y + filterWidth - 1) * sizeof(uchar3);
+      blurImgKernel2<<<gridSize, blockSize, shareMemSize>>>(
           d_inPixels, width, height, d_filter, filterWidth, d_outPixels);
+
     } else {
       // TODO: call blurImgKernel3
-      blurImgKernel3<<<gridSize, blockSize,
-                       (blockSize.x + filterWidth - 1) *
-                           (blockSize.y + filterWidth - 1) * sizeof(uchar3)>>>(
+      int shareMemSize = (blockSize.x + filterWidth - 1) *
+                         (blockSize.y + filterWidth - 1) * sizeof(uchar3);
+      blurImgKernel3<<<gridSize, blockSize, shareMemSize>>>(
           d_inPixels, width, height, filterWidth, d_outPixels);
     }
     timer.Stop();
@@ -376,8 +393,12 @@ int main(int argc, char **argv) {
   float *filter = (float *)malloc(filterWidth * filterWidth * sizeof(float));
   for (int filterR = 0; filterR < filterWidth; filterR++) {
     for (int filterC = 0; filterC < filterWidth; filterC++) {
-      filter[filterR * filterWidth + filterC] =
-          1. / (filterWidth * filterWidth);
+      // filter[filterR * filterWidth + filterC] = 1. / (filterWidth *
+      // filterWidth);
+      if (filterC == filterWidth / 2 && filterR == filterWidth / 2)
+        filter[filterR * filterWidth + filterC] = 1;
+      else
+        filter[filterR * filterWidth + filterC] = 0;
     }
   }
 
