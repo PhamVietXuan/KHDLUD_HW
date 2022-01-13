@@ -12,7 +12,10 @@
                 cudaGetErrorString(error));\
         exit(1);\
     }\
-}
+}\
+
+
+
 
 struct GpuTimer
 {
@@ -103,13 +106,165 @@ void sortByHost(const uint32_t * in, int n,
     free(bits);
     free(nOnesBefore);
 }
+__device__ int bCount = 0;
+volatile __device__ int bCount1 = 0;
+// song song hóa bước extract bit
+__global__ void extractBitKernel(const uint32_t* in, uint32_t* out, int n, int bitIdx)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i <n)
+    {
+        out[i] = int((in[i] >> bitIdx) & 1);
+    }
+    __syncthreads();
+}
 
+// song song hóa bước scan bit
+__global__ void scanBitKernel(const uint32_t* in, uint32_t* out, volatile uint32_t* bSums, int n)
+{
+    
+    extern __shared__ int s_data[];
+    __shared__ int bi;
+    
+    if ( threadIdx.x == 0)
+    {
+        bi = atomicAdd(&bCount, 1);
+    }
+    __syncthreads();
+    //copy data from GMEM to SMEM
+    int i1, i2;
+    i1 = bi * 2 * blockDim.x + threadIdx.x;
+    i2 = i1 + blockDim.x;
+
+    if (i1 >= n && i2 >= n)
+        return;
+        s_data[threadIdx.x] = (i1 <= 0) ?0 : in[i1 - 1];
+        s_data[threadIdx.x + blockDim.x] = (i2 <= 0) ?0 : in[i2 - 1];
+
+	__syncthreads();
+
+    // scan
+    for(int stride = 1; stride < 2* blockDim.x; stride*= 2)
+    {
+        int s_dataIdx = (threadIdx.x+ 1)*2* stride - 1;
+        if( s_dataIdx < 2* blockDim.x)
+        {
+            s_data[s_dataIdx] += s_data[s_dataIdx - stride];
+        }
+        __syncthreads();
+    }
+
+    for(int stride = blockDim.x/2; stride > 0; stride /= 2)
+    {
+        int s_dataIdx = (threadIdx.x + 1)*2*stride - 1+ stride;
+        if(s_dataIdx < 2* blockDim.x)
+        {
+            s_data[s_dataIdx] += s_data[s_dataIdx - stride];
+        }
+        __syncthreads();
+    }
+    
+    if (threadIdx.x == 0)
+    {
+        bSums[bi] = s_data[2*blockDim.x - 1];
+
+        if (bi > 0)
+        {
+            while (bCount1 < bi) {}
+            bSums[bi] += bSums[bi - 1];
+            __threadfence();
+        }
+        bCount1 += 1;
+    }
+    __syncthreads();
+    // copy data from SMEM to GMEM
+    if (i1 < n)
+        out[i1] = s_data[threadIdx.x];
+
+    if (i2 < n)
+        out[i2] = s_data[threadIdx.x + blockDim.x];
+    
+    if (bi > 0)
+    {
+        if (i1 < n) out[i1] += bSums[bi - 1];
+        if (i2 < n) out[i2] += bSums[bi - 1];
+    }
+}
+
+
+
+__global__ void computeRankKernel(const uint32_t * in, uint32_t* out, const uint32_t* bits, uint32_t* nOnesBefore, int n,  int bitIdx)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int nZeros = n - nOnesBefore[n-1] - bits[n - 1];
+
+    int rank;
+    rank = (bits[i] == 0) ? i - nOnesBefore[i] : nZeros + nOnesBefore[i];
+    out[rank] = in[i];
+}
 // Parallel Radix Sort
 void sortByDevice(const uint32_t * in, int n, uint32_t * out, int blockSize)
 {
     // TODO
+    
+    int blkDataSize = 2* blockSize;
+    int blkgridSize = (n - 1) / blkDataSize + 1;
+    int gridSize = (n - 1) / blockSize +1;
+    size_t nBytes = n*sizeof(uint32_t);
+    size_t sMem = blkDataSize* sizeof(int);
+    uint32_t *d_in, *d_out, *d_bits, *d_blkSums, *d_nOnesBefore;
 
-}
+    CHECK(cudaMalloc(&d_in, nBytes));
+    CHECK(cudaMalloc(&d_out, nBytes));
+    CHECK(cudaMalloc(&d_bits, nBytes));
+    CHECK(cudaMalloc(&d_nOnesBefore, nBytes));
+    CHECK(cudaMalloc(&d_blkSums, blkgridSize * sizeof(int)));
+
+    CHECK(cudaMemcpy(d_in, in, nBytes, cudaMemcpyHostToDevice));  
+
+    // Loop from LSB (Least Significant Bit) to MSB (Most Significant Bit)
+	// In each loop, sort elements according to the current bit from src to dst 
+	// (using STABLE counting sort)
+    for (int bitIdx = 0; bitIdx< sizeof(uint32_t) * 8; bitIdx ++)
+    {
+        // reset bCount, bCuont1
+        int zero = 0; 
+        CHECK(cudaMemcpyToSymbol(bCount,&zero, sizeof(int)));
+        CHECK(cudaMemcpyToSymbol(bCount1,&zero, sizeof(int)));
+
+        //extract bit
+        extractBitKernel<<<gridSize, blockSize>>>(d_in, d_bits, n, bitIdx);
+        cudaDeviceSynchronize();
+        CHECK(cudaGetLastError());
+        
+        //scan bit
+        scanBitKernel<<<blkgridSize, blockSize, sMem>>>(d_bits, d_nOnesBefore, d_blkSums, n);
+        cudaDeviceSynchronize();
+        CHECK(cudaGetLastError());
+
+        // Compute rank and write to dst
+        computeRankKernel<<<gridSize, blockSize>>>(d_in, d_out,  d_bits, d_nOnesBefore, n, bitIdx);
+        cudaDeviceSynchronize();
+        CHECK(cudaGetLastError());
+
+        //swap d_in and d_out
+        uint32_t *tmp;
+        tmp = d_in;
+        d_in = d_out;
+        d_out = tmp;
+    }
+
+    CHECK(cudaMemcpy(out, d_out, nBytes, cudaMemcpyDeviceToHost));
+
+    //free memmory
+    cudaFree(d_in);
+    cudaFree(d_out);
+    cudaFree(d_bits);
+    cudaFree(d_blkSums);
+    cudaFree(d_nOnesBefore);
+
+} 
+
 
 // Radix Sort
 void sort(const uint32_t * in, int n, 
